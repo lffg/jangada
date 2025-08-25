@@ -1,0 +1,6 @@
+[package]
+name = "jangada-core"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
