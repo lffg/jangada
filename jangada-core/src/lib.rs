@@ -46,6 +46,13 @@ impl Machine {
         }
     }
 
+    /// Will clear the actions buffer for the next [`Self::tick`] after the
+    /// returned [`ActionsGuard`] gets dropped.
+    #[must_use]
+    pub fn actions(&mut self) -> ActionsGuard<'_> {
+        ActionsGuard(self)
+    }
+
     #[instrument(
         skip_all,
         fields(
@@ -265,5 +272,19 @@ impl Machine {
 
     fn is_majority(&self, received: usize) -> bool {
         received * 2 > self.peer_ids.len() + 1
+    }
+}
+
+pub struct ActionsGuard<'m>(&'m mut Machine);
+
+impl ActionsGuard<'_> {
+    pub fn actions(&self) -> &[Action] {
+        &self.0.actions
+    }
+}
+
+impl Drop for ActionsGuard<'_> {
+    fn drop(&mut self) {
+        self.0.actions.clear();
     }
 }
