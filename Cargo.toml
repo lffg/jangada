@@ -1,8 +1,14 @@
 
 [workspace]
 resolver = "3"
-members = ["jangada-core", "jangada-viewer"]
+members = ["jangada-core", "jangada-sim", "jangada-viewer"]
 
 [workspace.package]
 version = "0.0.1"
 edition = "2024"
+
+[workspace.dependencies]
+jangada-core.path = "./jangada-core"
+
+rand = "0.9.2"
+tracing = "0.1.41"
