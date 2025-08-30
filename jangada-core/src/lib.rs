@@ -1,4 +1,4 @@
-use std::{cell::Cell, rc::Rc, time::Duration};
+use std::{cell::Cell, fmt, rc::Rc, time::Duration};
 
 use tracing::{instrument, trace};
 
@@ -16,25 +16,30 @@ mod util;
 pub use util::{DefaultMachineRng, MachineRng};
 
 /// The consensus machine of a single server.
-pub struct Machine {
+///
+/// The `I` type parameter represents a server ID.
+pub struct Machine<I> {
     /// The ID of this server.
-    id: u64,
-    /// The ID of the other peers (does not include this server).
-    peer_ids: Vec<u64>,
+    id: I,
+    /// The IDs of the other peers (does not include this server).
+    peer_ids: Vec<I>,
     /// This server's state.
     state: State,
     current_term: u64,
-    voted_for: Option<u64>,
+    voted_for: Option<I>,
     // ===== other =====
     /// Buffer of actions produced in a single tick. Actions inserted here will
     /// be picked up after the current [`Self::tick`] call.
-    actions: Vec<Action>,
+    actions: Vec<Action<I>>,
     /// Rng support.
     rng: Box<dyn MachineRng>,
 }
 
-impl Machine {
-    pub fn new(id: u64, peer_ids: Vec<u64>, rng: Box<dyn MachineRng>) -> Machine {
+impl<I> Machine<I>
+where
+    I: Clone + PartialEq + fmt::Debug,
+{
+    pub fn new(id: I, peer_ids: Vec<I>, rng: Box<dyn MachineRng>) -> Machine<I> {
         Machine {
             id,
             peer_ids,
@@ -49,19 +54,19 @@ impl Machine {
     /// Will clear the actions buffer for the next [`Self::tick`] after the
     /// returned [`ActionsGuard`] gets dropped.
     #[must_use]
-    pub fn actions(&mut self) -> ActionsGuard<'_> {
+    pub fn actions(&mut self) -> ActionsGuard<'_, I> {
         ActionsGuard(self)
     }
 
     #[instrument(
         skip_all,
         fields(
-            node = %self.id,
+            node = ?self.id,
             term = ?self.current_term,
             state = ?self.state,
         ),
     )]
-    pub fn tick(&mut self, event: Event) {
+    pub fn tick(&mut self, event: Event<I>) {
         assert!(self.actions.is_empty());
         match event {
             Event::Start => self.start(),
@@ -114,14 +119,14 @@ impl Machine {
     fn start_election(&mut self) {
         self.state = State::Candidate;
         self.current_term += 1;
-        self.voted_for = Some(self.id);
+        self.voted_for = Some(self.id.clone());
 
         let election_term = self.current_term;
         trace!(election_term, "starting election for new term");
 
         let payload = RequestVote {
             term: election_term,
-            candidate_id: self.id,
+            candidate_id: self.id.clone(),
         };
         let ctx = RequestVoteCtx {
             votes_received: Rc::new(Cell::new(1)),
@@ -129,9 +134,9 @@ impl Machine {
         };
 
         for peer_id in &self.peer_ids {
-            trace!(peer_id, "sending RequestVote");
+            trace!(?peer_id, "sending RequestVote");
             let rpc = RpcAction::RequestVote(payload.clone(), ctx.clone());
-            self.actions.push(Action::Rpc(*peer_id, rpc));
+            self.actions.push(Action::Rpc(peer_id.clone(), rpc));
         }
 
         // Start another election timer in case this one isn't fruitful.
@@ -159,7 +164,7 @@ impl Machine {
     }
 
     // think on another peer's pov (the one *receiving* the RPC)
-    fn request_vote(&mut self, src: u64, rpc: RequestVote) {
+    fn request_vote(&mut self, src: I, rpc: RequestVote<I>) {
         if self.state == State::Dead {
             return;
         }
@@ -170,7 +175,10 @@ impl Machine {
             // no return here! — fallthrough
         }
 
-        let valid_vote = self.voted_for.is_some_and(|v| v == rpc.candidate_id);
+        let valid_vote = self
+            .voted_for
+            .as_ref()
+            .is_some_and(|v| v == &rpc.candidate_id);
         let granted = if rpc.term == self.current_term && valid_vote {
             self.voted_for = Some(rpc.candidate_id);
             self.run_election_timer(); // Reset election timer.
@@ -209,16 +217,16 @@ impl Machine {
 
         let payload = AppendEntries {
             term: self.current_term,
-            leader_id: self.id,
+            leader_id: self.id.clone(),
         };
         let ctx = AppendEntriesCtx {
             saved_term: self.current_term,
         };
 
         for peer_id in &self.peer_ids {
-            trace!(peer_id, "sending AppendEntries");
+            trace!(?peer_id, "sending AppendEntries");
             let rpc = RpcAction::AppendEntries(payload.clone(), ctx.clone());
-            self.actions.push(Action::Rpc(*peer_id, rpc));
+            self.actions.push(Action::Rpc(peer_id.clone(), rpc));
         }
     }
 
@@ -233,7 +241,7 @@ impl Machine {
     }
 
     // think on another peer's pov (the one *receiving* the RPC)
-    fn append_entries(&mut self, src: u64, rpc: AppendEntries) {
+    fn append_entries(&mut self, src: I, rpc: AppendEntries<I>) {
         if self.state == State::Dead {
             return;
         }
@@ -275,15 +283,15 @@ impl Machine {
     }
 }
 
-pub struct ActionsGuard<'m>(&'m mut Machine);
+pub struct ActionsGuard<'m, I>(&'m mut Machine<I>);
 
-impl ActionsGuard<'_> {
-    pub fn actions(&self) -> &[Action] {
+impl<I> ActionsGuard<'_, I> {
+    pub fn actions(&self) -> &[Action<I>] {
         &self.0.actions
     }
 }
 
-impl Drop for ActionsGuard<'_> {
+impl<I> Drop for ActionsGuard<'_, I> {
     fn drop(&mut self) {
         self.0.actions.clear();
     }

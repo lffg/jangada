@@ -13,7 +13,7 @@ pub enum State {
 /// All variants are tuple-like with two elements. The first one contain the
 /// actual event payload; the second contains additional context copied directly
 /// from the action that triggered this event.
-pub enum Event {
+pub enum Event<I> {
     Start,
 
     /// By [`Action::StartElectionTimeout`].
@@ -23,18 +23,18 @@ pub enum Event {
     LeaderHeartbeatTick,
 
     /// *Source* node ID and the reply payload.
-    RpcReply(u64, RpcEvent),
+    RpcReply(I, RpcEvent<I>),
 }
 
-pub enum RpcEvent {
+pub enum RpcEvent<I> {
     /// The incoming RPC.
-    RequestVote(RequestVote),
+    RequestVote(RequestVote<I>),
 
     /// The incoming reply of [`RpcAction::RequestVote`].
     RequestVoteReply(RequestVoteReply, RequestVoteCtx),
 
     /// The incoming RPC.
-    AppendEntries(AppendEntries),
+    AppendEntries(AppendEntries<I>),
 
     /// The incoming reply of [`RpcAction::AppendEntries`].
     AppendEntriesReply(AppendEntriesReply, AppendEntriesCtx),
@@ -45,7 +45,7 @@ pub enum RpcEvent {
 /// All variants are tuple-like with two elements. The first one contains the
 /// actual action payload; the second contains additional context to be copied
 /// to the event that this action may yield.
-pub enum Action {
+pub enum Action<I> {
     /// Will trigger one [`Event::ElectionTimeout`].
     ///
     /// **CONTRACT:** The machine may yield multiple actions for this variant.
@@ -61,17 +61,17 @@ pub enum Action {
     StopLeaderHeartbeatTicker,
 
     /// *Destination* node ID and the action payload.
-    Rpc(u64, RpcAction),
+    Rpc(I, RpcAction<I>),
 }
 
-pub enum RpcAction {
+pub enum RpcAction<I> {
     /// Will trigger zero or more [`RpcEvent::RequestVoteReply`]. (More than one
     /// since we don't guarantee exactly-once delivery.)
-    RequestVote(RequestVote, RequestVoteCtx),
+    RequestVote(RequestVote<I>, RequestVoteCtx),
     RequestVoteReply(RequestVoteReply),
 
     /// Will trigger zero or more [`RpcEvent::AppendEntriesReply`].
-    AppendEntries(AppendEntries, AppendEntriesCtx),
+    AppendEntries(AppendEntries<I>, AppendEntriesCtx),
     AppendEntriesReply(AppendEntriesReply),
 }
 
@@ -80,9 +80,9 @@ pub struct ElectionTimeoutCtx {
 }
 
 #[derive(Clone)]
-pub struct RequestVote {
+pub struct RequestVote<I> {
     pub term: u64,
-    pub candidate_id: u64,
+    pub candidate_id: I,
 }
 
 #[derive(Clone)]
@@ -97,9 +97,9 @@ pub struct RequestVoteReply {
 }
 
 #[derive(Clone)]
-pub struct AppendEntries {
+pub struct AppendEntries<I> {
     pub term: u64,
-    pub leader_id: u64,
+    pub leader_id: I,
     // TODO: prev_log_index: u64, prev_log_term: u64, entries: Vec<LogEntry>, leader_commit: u64,
 }
 
