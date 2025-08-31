@@ -728,7 +728,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "jangada-viewer"
+name = "jangada-vis"
 version = "0.0.1"
 
 [[package]]

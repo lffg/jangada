@@ -1,5 +1,5 @@
 [package]
-name = "jangada-viewer"
+name = "jangada-vis"
 version.workspace = true
 edition.workspace = true
 
