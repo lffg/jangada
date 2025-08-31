@@ -25,7 +25,10 @@ pub enum Event<I> {
     LeaderHeartbeatTick,
 
     /// *Source* node ID and the reply payload.
-    RpcReply(I, RpcPayload<I>),
+    ///
+    /// An incoming RPC call, or a reply to a RPC action issued by the current
+    /// server.
+    Rpc(I, RpcPayload<I>),
 }
 
 /// An *output* action which indicates that some action is to be carried out.

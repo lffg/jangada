@@ -1,13 +1,10 @@
-use std::{fmt, time::Duration};
+use std::{fmt, mem, time::Duration};
 
 use tracing::{instrument, trace};
 
-use crate::{
-    types::{
-        Action, AppendEntries, AppendEntriesReply, ElectionTimeoutCtx, Event, RequestVote,
-        RequestVoteReply, RpcPayload, State,
-    },
-    util::ToDisplay,
+use crate::types::{
+    Action, AppendEntries, AppendEntriesReply, ElectionTimeoutCtx, Event, RequestVote,
+    RequestVoteReply, RpcPayload, State,
 };
 
 pub mod types;
@@ -80,13 +77,6 @@ where
         &self.peer_ids
     }
 
-    /// Will clear the actions buffer for the next [`Self::tick`] after the
-    /// returned [`ActionsGuard`] gets dropped.
-    #[must_use]
-    pub fn actions(&mut self) -> ActionsGuard<'_, I> {
-        ActionsGuard(self)
-    }
-
     #[instrument(
         skip_all,
         fields(
@@ -95,20 +85,19 @@ where
             state = ?self.state,
         ),
     )]
-    pub fn tick(&mut self, event: Event<I>) {
+    pub fn tick(&mut self, event: Event<I>) -> Vec<Action<I>> {
         assert!(self.actions.is_empty());
         match event {
             Event::Start => self.start(),
             Event::ElectionTimeout((), ctx) => self.election_timeout(ctx),
             Event::LeaderHeartbeatTick => self.leader_heartbeat_tick(),
-            Event::RpcReply(_src, RpcPayload::RequestVoteReply(r)) => self.request_vote_reply(r),
-            Event::RpcReply(_src, RpcPayload::AppendEntriesReply(r)) => {
-                self.append_entries_reply(r)
-            }
+            Event::Rpc(_src, RpcPayload::RequestVoteReply(r)) => self.request_vote_reply(r),
+            Event::Rpc(_src, RpcPayload::AppendEntriesReply(r)) => self.append_entries_reply(r),
             // (think about the other peer)
-            Event::RpcReply(src, RpcPayload::RequestVote(p)) => self.request_vote(src, p),
-            Event::RpcReply(src, RpcPayload::AppendEntries(p)) => self.append_entries(src, p),
+            Event::Rpc(src, RpcPayload::RequestVote(p)) => self.request_vote(src, p),
+            Event::Rpc(src, RpcPayload::AppendEntries(p)) => self.append_entries(src, p),
         }
+        mem::replace(&mut self.actions, Vec::with_capacity(2))
     }
 
     fn start(&mut self) {
@@ -117,7 +106,7 @@ where
 
     fn run_election_timer(&mut self) {
         let duration = self.rng.next_election_timeout();
-        trace!("scheduled election timer ({})", duration.display());
+        trace!("scheduled election timer ({duration:?})");
         self.actions.push({
             let ctx = ElectionTimeoutCtx {
                 term_started: self.current_term,
@@ -300,21 +289,5 @@ where
 
     fn is_majority(&self, received: u32) -> bool {
         (received as usize) * 2 > self.peer_ids.len() + 1
-    }
-}
-
-pub struct ActionsGuard<'m, I>(&'m mut Machine<I>);
-
-impl<I> std::ops::Deref for ActionsGuard<'_, I> {
-    type Target = [Action<I>];
-
-    fn deref(&self) -> &Self::Target {
-        &self.0.actions
-    }
-}
-
-impl<I> Drop for ActionsGuard<'_, I> {
-    fn drop(&mut self) {
-        self.0.actions.clear();
     }
 }

@@ -39,7 +39,7 @@ where
     I: Clone + PartialEq + fmt::Debug,
 {
     pub async fn submit_response(&self, src: I, payload: RpcPayload<I>) {
-        self.0.send(Event::RpcReply(src, payload)).await.unwrap();
+        self.0.send(Event::Rpc(src, payload)).await.unwrap();
     }
 }
 
@@ -120,10 +120,7 @@ where
 
     async fn handle_event(&mut self, event: Event<I>) {
         warn!(?event, "got event, will TICK machine...");
-        self.machine.tick(event);
-
-        // XX: How can we get rid of this allocation?
-        let actions = (*self.machine.actions()).to_vec();
+        let actions = self.machine.tick(event);
 
         for action in actions {
             info!(?action, "handling action");
