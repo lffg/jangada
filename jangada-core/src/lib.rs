@@ -34,6 +34,7 @@ pub struct Machine<I> {
     /// election starts.
     election_state: ElectionState,
     // ===== other =====
+    leader_heartbeat_interval: Duration,
     /// Buffer of actions produced in a single tick. Actions inserted here will
     /// be picked up after the current [`Self::tick`] call.
     actions: Vec<Action<I>>,
@@ -51,7 +52,12 @@ impl<I> Machine<I>
 where
     I: Clone + PartialEq + fmt::Debug,
 {
-    pub fn new(id: I, peer_ids: Vec<I>, rng: Box<dyn MachineRng>) -> Machine<I> {
+    pub fn new(
+        id: I,
+        peer_ids: Vec<I>,
+        leader_heartbeat_interval: Duration,
+        rng: Box<dyn MachineRng>,
+    ) -> Machine<I> {
         Machine {
             id,
             peer_ids,
@@ -60,6 +66,7 @@ where
             voted_for: None,
             append_log_saved_term: 0,
             election_state: ElectionState { term: 0, votes: 0 },
+            leader_heartbeat_interval,
             actions: Vec::with_capacity(16),
             rng,
         }
@@ -193,10 +200,8 @@ where
             // no return here! — fallthrough
         }
 
-        let valid_vote = self
-            .voted_for
-            .as_ref()
-            .is_some_and(|v| v == &rpc.candidate_id);
+        let valid_vote =
+            self.voted_for.is_none() || self.voted_for.as_ref() == Some(&rpc.candidate_id);
         let granted = if rpc.term == self.current_term && valid_vote {
             self.voted_for = Some(rpc.candidate_id);
             self.run_election_timer(); // Reset election timer.
@@ -216,10 +221,9 @@ where
     fn become_leader(&mut self) {
         self.state = State::Leader;
         trace!("became leader!");
-
-        let duration = Duration::from_millis(50);
-        self.actions
-            .push(Action::StartLeaderHeartbeatTicker(duration));
+        self.actions.push(Action::StartLeaderHeartbeatTicker(
+            self.leader_heartbeat_interval,
+        ));
     }
 
     fn leader_heartbeat_tick(&mut self) {
@@ -233,6 +237,7 @@ where
     fn leader_heartbeat_send(&mut self) {
         assert_eq!(self.state, State::Leader);
 
+        self.append_log_saved_term = self.current_term;
         let payload = RpcPayload::AppendEntries(AppendEntries {
             term: self.current_term,
             leader_id: self.id.clone(),

@@ -1,4 +1,4 @@
-use std::{net::SocketAddr, sync::Arc};
+use std::{net::SocketAddr, sync::Arc, time::Duration};
 
 use axum::{Json, Router, extract::State, routing::post};
 use clap::Parser;
@@ -29,7 +29,8 @@ async fn main() {
         opts.constant,
         opts.factor,
     ));
-    let machine = Machine::new(opts.id, opts.peers.clone(), rng);
+    let heartbeat_interval = Duration::from_millis(opts.constant);
+    let machine = Machine::new(opts.id, opts.peers.clone(), heartbeat_interval, rng);
 
     let requester = Box::new(HttpRequester::new(opts.id));
     let (driver, handle) = TokioDriver::new(requester, machine);
