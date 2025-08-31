@@ -1,0 +1,14 @@
+[package]
+name = "jangada-tokio"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+serde.workspace = true
+axum.workspace = true
+clap.workspace = true
+jangada-core.workspace = true
+reqwest.workspace = true
+tokio.workspace = true
+tracing-subscriber.workspace = true
+tracing.workspace = true

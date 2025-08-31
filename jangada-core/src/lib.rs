@@ -1,11 +1,11 @@
-use std::{cell::Cell, fmt, rc::Rc, time::Duration};
+use std::{fmt, time::Duration};
 
 use tracing::{instrument, trace};
 
 use crate::{
     types::{
-        Action, AppendEntries, AppendEntriesCtx, AppendEntriesReply, ElectionTimeoutCtx, Event,
-        RequestVote, RequestVoteCtx, RequestVoteReply, RpcAction, RpcEvent, State,
+        Action, AppendEntries, AppendEntriesReply, ElectionTimeoutCtx, Event, RequestVote,
+        RequestVoteReply, RpcPayload, State,
     },
     util::ToDisplay,
 };
@@ -27,12 +27,24 @@ pub struct Machine<I> {
     state: State,
     current_term: u64,
     voted_for: Option<I>,
+    // ===== state for inflight RPCs =====
+    /// The current term when the append entries action was issued.
+    append_log_saved_term: u64,
+    /// The count of votes for the current election. Resets whenever a new
+    /// election starts.
+    election_state: ElectionState,
     // ===== other =====
     /// Buffer of actions produced in a single tick. Actions inserted here will
     /// be picked up after the current [`Self::tick`] call.
     actions: Vec<Action<I>>,
     /// Rng support.
     rng: Box<dyn MachineRng>,
+}
+
+#[derive(Debug)]
+struct ElectionState {
+    term: u64,
+    votes: u32,
 }
 
 impl<I> Machine<I>
@@ -46,9 +58,19 @@ where
             state: State::Follower,
             current_term: 1,
             voted_for: None,
+            append_log_saved_term: 0,
+            election_state: ElectionState { term: 0, votes: 0 },
             actions: Vec::with_capacity(16),
             rng,
         }
+    }
+
+    pub fn id(&self) -> &I {
+        &self.id
+    }
+
+    pub fn peers(&self) -> &[I] {
+        &self.peer_ids
     }
 
     /// Will clear the actions buffer for the next [`Self::tick`] after the
@@ -72,15 +94,13 @@ where
             Event::Start => self.start(),
             Event::ElectionTimeout((), ctx) => self.election_timeout(ctx),
             Event::LeaderHeartbeatTick => self.leader_heartbeat_tick(),
-            Event::RpcReply(_src, RpcEvent::RequestVoteReply(r, ctx)) => {
-                self.request_vote_reply(r, ctx)
-            }
-            Event::RpcReply(_src, RpcEvent::AppendEntriesReply(r, ctx)) => {
-                self.append_entries_reply(r, ctx)
+            Event::RpcReply(_src, RpcPayload::RequestVoteReply(r)) => self.request_vote_reply(r),
+            Event::RpcReply(_src, RpcPayload::AppendEntriesReply(r)) => {
+                self.append_entries_reply(r)
             }
             // (think about the other peer)
-            Event::RpcReply(src, RpcEvent::RequestVote(p)) => self.request_vote(src, p),
-            Event::RpcReply(src, RpcEvent::AppendEntries(p)) => self.append_entries(src, p),
+            Event::RpcReply(src, RpcPayload::RequestVote(p)) => self.request_vote(src, p),
+            Event::RpcReply(src, RpcPayload::AppendEntries(p)) => self.append_entries(src, p),
         }
     }
 
@@ -118,46 +138,44 @@ where
 
     fn start_election(&mut self) {
         self.state = State::Candidate;
-        self.current_term += 1;
+        self.current_term += 1; // <---- new term
         self.voted_for = Some(self.id.clone());
 
-        let election_term = self.current_term;
-        trace!(election_term, "starting election for new term");
+        self.election_state = ElectionState {
+            term: self.current_term,
+            votes: 1, // Start as one to already account for the self vote.
+        };
+        trace!(?self.election_state, "starting election for new term");
 
-        let payload = RequestVote {
-            term: election_term,
+        let payload = RpcPayload::RequestVote(RequestVote {
+            term: self.election_state.term,
             candidate_id: self.id.clone(),
-        };
-        let ctx = RequestVoteCtx {
-            votes_received: Rc::new(Cell::new(1)),
-            election_term,
-        };
+        });
 
         for peer_id in &self.peer_ids {
             trace!(?peer_id, "sending RequestVote");
-            let rpc = RpcAction::RequestVote(payload.clone(), ctx.clone());
-            self.actions.push(Action::Rpc(peer_id.clone(), rpc));
+            self.actions
+                .push(Action::Rpc(peer_id.clone(), payload.clone()));
         }
 
         // Start another election timer in case this one isn't fruitful.
         self.run_election_timer();
     }
 
-    #[instrument(skip_all, fields(reply_term = reply.term, election_term = ctx.election_term))]
-    fn request_vote_reply(&mut self, reply: RequestVoteReply, ctx: RequestVoteCtx) {
+    #[instrument(skip_all, fields(reply_term = reply.term, election_state = ?self.election_state))]
+    fn request_vote_reply(&mut self, reply: RequestVoteReply) {
         if self.state != State::Candidate {
             trace!("non-candidate in vote reply, bailing");
             return;
         }
 
-        if reply.term > ctx.election_term {
+        if reply.term > self.election_state.term {
             trace!("term out of date in reply");
             self.become_follower(reply.term);
-        } else if reply.term == ctx.election_term && reply.granted {
-            ctx.votes_received.update(|v| v + 1);
-            let votes = ctx.votes_received.get();
-            if self.is_majority(votes) {
-                trace!("won election with {votes} votes");
+        } else if reply.term == self.election_state.term && reply.granted {
+            self.election_state.votes += 1;
+            if self.is_majority(self.election_state.votes) {
+                trace!("won election with {} votes", self.election_state.votes);
                 self.become_leader();
             }
         }
@@ -188,7 +206,7 @@ where
         };
 
         trace!("granted vote? {granted}");
-        let reply = RpcAction::RequestVoteReply(RequestVoteReply {
+        let reply = RpcPayload::RequestVoteReply(RequestVoteReply {
             term: self.current_term,
             granted,
         });
@@ -215,24 +233,21 @@ where
     fn leader_heartbeat_send(&mut self) {
         assert_eq!(self.state, State::Leader);
 
-        let payload = AppendEntries {
+        let payload = RpcPayload::AppendEntries(AppendEntries {
             term: self.current_term,
             leader_id: self.id.clone(),
-        };
-        let ctx = AppendEntriesCtx {
-            saved_term: self.current_term,
-        };
+        });
 
         for peer_id in &self.peer_ids {
             trace!(?peer_id, "sending AppendEntries");
-            let rpc = RpcAction::AppendEntries(payload.clone(), ctx.clone());
-            self.actions.push(Action::Rpc(peer_id.clone(), rpc));
+            self.actions
+                .push(Action::Rpc(peer_id.clone(), payload.clone()));
         }
     }
 
-    #[instrument(skip_all, fields(reply_term = reply.term, saved_term = ctx.saved_term))]
-    fn append_entries_reply(&mut self, reply: AppendEntriesReply, ctx: AppendEntriesCtx) {
-        if reply.term > ctx.saved_term {
+    #[instrument(skip_all, fields(reply_term = reply.term, saved_term = self.append_log_saved_term))]
+    fn append_entries_reply(&mut self, reply: AppendEntriesReply) {
+        if reply.term > self.append_log_saved_term {
             trace!("term out of date in AppendEntries reply");
             self.become_follower(reply.term);
             return;
@@ -262,7 +277,7 @@ where
         }
 
         trace!("success? {success}");
-        let reply = RpcAction::AppendEntriesReply(AppendEntriesReply {
+        let reply = RpcPayload::AppendEntriesReply(AppendEntriesReply {
             term: self.current_term,
             success,
         });
@@ -278,15 +293,17 @@ where
         self.run_election_timer();
     }
 
-    fn is_majority(&self, received: usize) -> bool {
-        received * 2 > self.peer_ids.len() + 1
+    fn is_majority(&self, received: u32) -> bool {
+        (received as usize) * 2 > self.peer_ids.len() + 1
     }
 }
 
 pub struct ActionsGuard<'m, I>(&'m mut Machine<I>);
 
-impl<I> ActionsGuard<'_, I> {
-    pub fn actions(&self) -> &[Action<I>] {
+impl<I> std::ops::Deref for ActionsGuard<'_, I> {
+    type Target = [Action<I>];
+
+    fn deref(&self) -> &Self::Target {
         &self.0.actions
     }
 }
