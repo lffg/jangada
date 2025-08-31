@@ -29,7 +29,7 @@ async fn main() {
         opts.constant,
         opts.factor,
     ));
-    let heartbeat_interval = Duration::from_millis(opts.constant);
+    let heartbeat_interval = Duration::from_millis(50 + opts.constant);
     let machine = Machine::new(opts.id, opts.peers.clone(), heartbeat_interval, rng);
 
     let requester = Box::new(HttpRequester::new(opts.id));
