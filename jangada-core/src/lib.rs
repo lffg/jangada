@@ -25,8 +25,6 @@ pub struct Machine<I> {
     current_term: u64,
     voted_for: Option<I>,
     // ===== state for inflight RPCs =====
-    /// The current term when the append entries action was issued.
-    append_log_saved_term: u64,
     /// The count of votes for the current election. Resets whenever a new
     /// election starts.
     election_state: ElectionState,
@@ -61,7 +59,6 @@ where
             state: State::Follower,
             current_term: 1,
             voted_for: None,
-            append_log_saved_term: 0,
             election_state: ElectionState { term: 0, votes: 0 },
             leader_heartbeat_interval,
             actions: Vec::with_capacity(16),
@@ -165,10 +162,15 @@ where
             return;
         }
 
-        if reply.term > self.election_state.term {
-            trace!("term out of date in reply");
+        if reply.term > self.current_term {
+            trace!("term out of date in RequestVote reply");
             self.become_follower(reply.term);
-        } else if reply.term == self.election_state.term && reply.granted {
+            return;
+        }
+
+        // Now we also must make sure the vote is for the election we're
+        // currently running (in `election_state`).
+        if reply.term == self.election_state.term && reply.granted {
             self.election_state.votes += 1;
             if self.is_majority(self.election_state.votes) {
                 trace!("won election with {} votes", self.election_state.votes);
@@ -226,7 +228,6 @@ where
     fn leader_heartbeat_send(&mut self) {
         assert_eq!(self.state, State::Leader);
 
-        self.append_log_saved_term = self.current_term;
         let payload = RpcPayload::AppendEntries(AppendEntries {
             term: self.current_term,
             leader_id: self.id.clone(),
@@ -239,9 +240,9 @@ where
         }
     }
 
-    #[instrument(skip_all, fields(reply_term = reply.term, saved_term = self.append_log_saved_term))]
+    #[instrument(skip_all, fields(reply_term = reply.term))]
     fn append_entries_reply(&mut self, reply: AppendEntriesReply) {
-        if reply.term > self.append_log_saved_term {
+        if reply.term > self.current_term {
             trace!("term out of date in AppendEntries reply");
             self.become_follower(reply.term);
             return;
